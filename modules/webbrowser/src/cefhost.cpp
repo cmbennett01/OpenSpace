@@ -31,7 +31,9 @@
 #include <openspace/misc/exception.h>
 #include <openspace/misc/profiling.h>
 #include <include/cef_app.h>
+#include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <string_view>
 
 #ifdef WIN32
@@ -52,6 +54,40 @@ using CefSettings = CefStructBase<CefSettingsTraits>;
 namespace {
     constexpr std::string_view _loggerCat = "CefHost";
 } // namespace
+
+#if defined(__linux__) && defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>
+
+// Workaround for https://issues.chromium.org/issues/401168177: the prebuilt CEF calls
+// mallinfo(), whose int fields overflow with large heaps and trip a CHECK in
+// MallocDumpProvider::OnMemoryDump. Defining the symbol in the executable interposes
+// glibc's version for libcef and returns values from mallinfo2 scaled to fit in int.
+extern "C" __attribute__((visibility("default"))) struct mallinfo mallinfo(void) {
+    const struct mallinfo2 m2 = mallinfo2();
+    // Chromium sums several fields as int, so scale everything down by a common
+    // factor until even the sum of four fields fits
+    size_t largest = std::max({ m2.arena, m2.hblkhd, m2.uordblks, m2.fordblks });
+    constexpr size_t Max = static_cast<size_t>(std::numeric_limits<int>::max() / 4);
+    int shift = 0;
+    while ((largest >> shift) > Max) {
+        shift++;
+    }
+    auto s = [shift](size_t v) { return static_cast<int>(v >> shift); };
+    struct mallinfo m = {};
+    m.arena = s(m2.arena);
+    m.ordblks = s(m2.ordblks);
+    m.smblks = s(m2.smblks);
+    m.hblks = s(m2.hblks);
+    m.hblkhd = s(m2.hblkhd);
+    m.usmblks = s(m2.usmblks);
+    m.fsmblks = s(m2.fsmblks);
+    m.uordblks = s(m2.uordblks);
+    m.fordblks = s(m2.fordblks);
+    m.keepcost = s(m2.keepcost);
+    return m;
+}
+#endif
 
 namespace openspace {
 
